@@ -1,0 +1,24 @@
+# Core LangChain and LangGraph
+langgraph>=0.2.0
+langchain>=0.1.0
+langchain-google-genai>=1.0.0
+langchain-core>=0.1.0
+
+# Google Generative AI
+google-generativeai>=0.3.0
+
+# Search APIs
+tavily-python>=0.3.0
+
+# Vector Store and Embeddings
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
+
+# Web Scraping
+beautifulsoup4>=4.12.0
+trafilatura>=1.6.0
+aiohttp>=3.9.0
+
+# Utilities
+numpy>=1.24.0
+python-dotenv>=1.0.0
