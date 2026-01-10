@@ -442,14 +442,6 @@ Built with:
 
 ---
 
-## 📞 Support
-
-- **Issues**: Check TROUBLESHOOTING.md first
-- **Questions**: See TAVILY_GUIDE.md for detailed examples
-- **Updates**: Star the repo for updates
-
----
-
 **Ready to start?** Just run:
 ```bash
 python tavily_agent.py
