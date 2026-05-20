@@ -1,4 +1,9 @@
 # Core LangChain and LangGraph
+# ============================================
+# AUTONOMOUS DEEP RESEARCH AGENT
+# Requirements for Multi-Agent Research System
+# ============================================
+
 langgraph>=0.2.0
 langchain>=0.1.0
 langchain-google-genai>=1.0.0
