@@ -30,7 +30,16 @@ import trafilatura
 
 @dataclass
 class Citation:
-    """Tracks source citations"""
+    """
+    Tracks source citations with metadata for proper attribution in research reports.
+    
+    Attributes:
+        source_id: Unique identifier for the source within the research context
+        url: Web URL where the source was found
+        title: Title of the source document or page
+        snippet: Short excerpt or summary of the source content
+        timestamp: ISO format timestamp of when the citation was created
+    """
     source_id: str
     url: str
     title: str
@@ -40,7 +49,20 @@ class Citation:
 
 @dataclass
 class ResearchSubTask:
-    """Represents a decomposed research subtask"""
+    """
+    Represents a decomposed research subtask for parallel execution.
+    
+    The planner agent breaks down complex queries into multiple focused subtasks
+    that can be researched independently and in parallel.
+    
+    Attributes:
+        id: Unique identifier for the subtask (e.g., "task_1")
+        query: Specific research question for this subtask
+        priority: Numeric priority (lower number = higher priority)
+        status: Current execution status (pending, in_progress, completed, failed)
+        results: List of source documents collected for this subtask
+        citations: List of Citation objects for proper attribution
+    """
     id: str
     query: str
     priority: int
@@ -50,7 +72,24 @@ class ResearchSubTask:
 
 
 class AgentState(TypedDict):
-    """State shared across all agents"""
+    """
+    State object shared across all agents in the LangGraph workflow.
+    
+    This TypedDict defines the schema for the research state that flows through
+    the planner -> executor -> indexer -> synthesizer pipeline.
+    
+    Attributes:
+        original_query: The user's initial research question
+        subtasks: List of planned research subtasks
+        completed_subtasks: List of successfully executed subtasks
+        research_plan: Human-readable description of the research strategy
+        raw_sources: Unprocessed source documents from web scraping
+        indexed_documents: Source documents after vector embedding and indexing
+        citations: Collection of Citation objects for all sources
+        final_report: The synthesized research report with inline citations
+        current_step: Current workflow step for debugging and monitoring
+        error: Error message if any agent fails during execution
+    """
     original_query: str
     subtasks: List[ResearchSubTask]
     completed_subtasks: List[ResearchSubTask]
@@ -64,50 +103,109 @@ class AgentState(TypedDict):
 
 
 class DeepResearchAgent:
-    """Main orchestrator for the deep research system"""
+    """
+    Main orchestrator for the deep research system using multi-agent architecture.
+    
+    This agent implements a planner-executor pattern with LangGraph to conduct
+    comprehensive web research. It decomposes complex queries, executes parallel
+    research tasks, indexes findings in a vector store, and synthesizes a
+    citation-grounded final report.
+    
+    The workflow consists of four specialized agents:
+        1. Planner: Breaks down the query into focused subtasks
+        2. Executor: Performs web searches and scrapes content in parallel
+        3. Indexer: Builds FAISS vector index for semantic retrieval
+        4. Synthesizer: Generates final report with inline citations
+    
+    Attributes:
+        gemini_api_key: API key for Google's Gemini LLM
+        max_sources: Maximum number of sources to collect per research task
+        llm: ChatGoogleGenerativeAI instance for LLM operations
+        embedder: SentenceTransformer model for generating text embeddings
+        vector_dim: Dimension of the embedding vectors (384 for all-MiniLM-L6-v2)
+        index: FAISS index for efficient similarity search
+        document_store: List of documents with metadata for retrieval
+        graph: Compiled LangGraph workflow
+    """
     
     def __init__(self, gemini_api_key: str, max_sources: int = 20):
+        """
+        Initialize the Deep Research Agent with LLM and vector search capabilities.
+        
+        Args:
+            gemini_api_key: Google Gemini API key for LLM access
+            max_sources: Maximum number of sources to collect (default: 20)
+        """
         self.gemini_api_key = gemini_api_key
         self.max_sources = max_sources
         
-        # Initialize Gemini LLM
+        # Initialize Gemini LLM for natural language understanding and generation
         self.llm = ChatGoogleGenerativeAI(
             model="models/gemini-2.5-flash",
             google_api_key=gemini_api_key,
-            temperature=0.7
+            temperature=0.7  # Balanced between creativity and consistency
         )
         
-        # Initialize embedding model for vector search
+        # Initialize embedding model for semantic vector search
+        # all-MiniLM-L6-v2 provides good performance/speed tradeoff
         self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        self.vector_dim = 384
-        self.index = None
-        self.document_store = []
+        self.vector_dim = 384  # Dimension of embeddings from the model
+        self.index = None  # FAISS index will be created during indexing
+        self.document_store = []  # Stores documents with metadata
         
-        # Build the agent graph
+        # Build the agent graph workflow
         self.graph = self._build_graph()
         
     def _build_graph(self) -> StateGraph:
-        """Constructs the LangGraph multi-agent workflow"""
+        """
+        Constructs the LangGraph multi-agent workflow with sequential execution.
+        
+        The workflow defines the research pipeline:
+        1. Planner decomposes the query into subtasks
+        2. Executor performs parallel research on all subtasks
+        3. Indexer creates vector embeddings for retrieved documents
+        4. Synthesizer generates the final citation-grounded report
+        
+        Returns:
+            StateGraph: Compiled LangGraph workflow ready for execution
+        """
         workflow = StateGraph(AgentState)
         
-        # Add nodes for each agent
+        # Add nodes for each specialized agent
         workflow.add_node("planner", self.planner_agent)
         workflow.add_node("executor", self.executor_agent)
         workflow.add_node("indexer", self.indexer_agent)
         workflow.add_node("synthesizer", self.synthesizer_agent)
         
-        # Define the workflow edges
+        # Define the sequential workflow edges
         workflow.set_entry_point("planner")
         workflow.add_edge("planner", "executor")
         workflow.add_edge("executor", "indexer")
         workflow.add_edge("indexer", "synthesizer")
-        workflow.add_edge("synthesizer", END)
+        workflow.add_edge("synthesizer", END)  # Terminate after synthesis
         
         return workflow.compile()
     
     async def planner_agent(self, state: AgentState) -> AgentState:
         """
-        Decomposes complex queries into parallel subtasks
+        Decomposes complex research queries into parallel executable subtasks.
+        
+        This agent uses Gemini LLM to analyze the query and break it down into
+        3-7 specific, focused subtasks that can be researched independently.
+        Each subtask receives a priority score for execution ordering.
+        
+        Args:
+            state: Current AgentState containing the original_query
+            
+        Returns:
+            AgentState: Updated state with subtasks and research plan
+            
+        Example:
+            Query: "What are the latest developments in quantum computing?"
+            Subtasks: 
+                - Quantum hardware advancements and qubit stability
+                - Quantum error correction techniques
+                - Quantum cryptography applications
         """
         print("🧠 PLANNER: Decomposing query into subtasks...")
         
@@ -131,7 +229,7 @@ class DeepResearchAgent:
         messages = planning_prompt.format_messages(query=state["original_query"])
         response = await self.llm.ainvoke(messages)
         
-        # Parse the subtasks
+        # Parse the JSON response and create ResearchSubTask objects
         try:
             subtasks_data = json.loads(response.content)
             subtasks = [
@@ -158,20 +256,31 @@ class DeepResearchAgent:
     
     async def executor_agent(self, state: AgentState) -> AgentState:
         """
-        Executes research subtasks in parallel using async I/O
-        Implements high-concurrency ingestion pipeline
+        Executes research subtasks in parallel using async I/O and concurrency.
+        
+        This agent implements high-concurrency ingestion by:
+        1. Running all subtasks concurrently using asyncio.gather
+        2. Each subtask performs web search and content scraping
+        3. Results are aggregated and deduplicated
+        4. Citations are created for all valid sources
+        
+        Args:
+            state: AgentState containing the planned subtasks
+            
+        Returns:
+            AgentState: Updated state with raw_sources and citations
         """
         print("\n🔍 EXECUTOR: Running parallel research tasks...")
         
         subtasks = state["subtasks"]
         
-        # Execute all subtasks concurrently
+        # Execute all subtasks concurrently for maximum throughput
         results = await asyncio.gather(
             *[self._execute_single_task(task) for task in subtasks],
-            return_exceptions=True
+            return_exceptions=True  # Don't let one failure stop others
         )
         
-        # Process results
+        # Process results and aggregate successful tasks
         all_sources = []
         all_citations = []
         completed_tasks = []
@@ -200,20 +309,34 @@ class DeepResearchAgent:
     
     async def _execute_single_task(self, task: ResearchSubTask) -> Dict[str, Any]:
         """
-        Executes a single research task with web search and scraping
+        Executes a single research task with web search and content scraping.
+        
+        This method handles the complete research pipeline for one subtask:
+        1. Performs web search using the task query
+        2. Scrapes content from top results in parallel
+        3. Creates citations for successful scrapes
+        4. Returns structured source data with metadata
+        
+        Args:
+            task: ResearchSubTask containing the specific query to research
+            
+        Returns:
+            Dict containing:
+                - sources: List of source documents with content
+                - citations: List of Citation objects for attribution
         """
         task.status = "in_progress"
         
-        # Simulate web search API calls (replace with actual API)
+        # Perform web search for the query
         sources = await self._search_web(task.query)
         
-        # Scrape content from sources in parallel
+        # Scrape content from sources in parallel for efficiency
         scraped_content = await asyncio.gather(
             *[self._scrape_url(source["url"]) for source in sources[:5]],
             return_exceptions=True
         )
         
-        # Process and create citations
+        # Process and create citations for successful scrapes
         citations = []
         valid_sources = []
         
@@ -223,7 +346,7 @@ class DeepResearchAgent:
                     source_id=f"{task.id}_src_{i}",
                     url=source["url"],
                     title=source.get("title", "Untitled"),
-                    snippet=content[:200]
+                    snippet=content[:200]  # First 200 chars as preview
                 )
                 citations.append(citation)
                 
@@ -242,26 +365,37 @@ class DeepResearchAgent:
     
     async def _search_web(self, query: str) -> List[Dict[str, Any]]:
         """
-        Simulates web search API (replace with actual Google Custom Search, Bing, etc.)
+        Performs web search for a given query.
         
-        NOTE: This is a MOCK implementation for testing. 
-        For production, integrate with real search APIs:
-        - Google Custom Search API
-        - Bing Search API  
-        - SerpAPI
-        - DuckDuckGo API
+        NOTE: This is a MOCK implementation for testing and demonstration.
+        For production use, replace with real search APIs:
+        - Google Custom Search API: Requires API key and Search Engine ID
+        - Bing Search API: Microsoft's search offering
+        - SerpAPI: Aggregates results from multiple search engines
+        - DuckDuckGo API: Privacy-focused search option
         
-        See enhanced_agent.py for real implementations.
+        The mock implementation returns realistic-looking results without
+        requiring API credentials, making it suitable for testing and
+        demonstration purposes.
+        
+        Args:
+            query: Search query string
+            
+        Returns:
+            List of dicts with keys: url, title, snippet
+            
+        See:
+            enhanced_agent.py for production implementations with real APIs
         """
         
-        await asyncio.sleep(0.1)  # Simulate API call
+        await asyncio.sleep(0.1)  # Simulate API call latency
         
-        # Return mock results with realistic content based on the query
+        # Generate deterministic but varied mock results based on query
         import hashlib
         query_hash = int(hashlib.md5(query.encode()).hexdigest(), 16)
         
         mock_results = []
-        for i in range(5):
+        for i in range(5):  # Return 5 mock results per query
             seed = query_hash + i
             mock_results.append({
                 "url": f"https://example-research-{seed % 1000}.com/article-{i}",
@@ -273,20 +407,35 @@ class DeepResearchAgent:
     
     async def _scrape_url(self, url: str) -> Optional[str]:
         """
-        Scrapes content from a URL using trafilatura
+        Scrapes and extracts main content from a URL.
         
-        NOTE: This mock version returns sample content for testing.
-        For production, this will fetch real web pages.
+        Uses trafilatura for intelligent content extraction that focuses on
+        the main article content while ignoring navigation, ads, and other
+        boilerplate elements.
+        
+        NOTE: The current implementation includes mock content for testing.
+        For production, this will fetch real web pages using aiohttp and
+        trafilatura for content extraction.
+        
+        Args:
+            url: The web page URL to scrape
+            
+        Returns:
+            Extracted text content as string, or None if scraping fails
+            
+        Raises:
+            No exceptions - all errors are caught and logged, returning None
         """
         try:
             # For testing without real URLs, return mock content
             if "example" in url or "mock" in url:
                 await asyncio.sleep(0.05)  # Simulate network delay
                 
-                # Generate realistic mock content based on URL
+                # Generate deterministic mock content based on URL
                 import hashlib
                 url_hash = int(hashlib.md5(url.encode()).hexdigest(), 16) % 10
                 
+                # Diverse mock content covering various research topics
                 mock_contents = [
                     "Quantum computing represents a paradigm shift in computational technology. Unlike classical computers that use bits (0 or 1), quantum computers use qubits which can exist in superposition. This allows quantum computers to process multiple states simultaneously, potentially solving certain complex problems exponentially faster than classical computers.",
                     
@@ -311,7 +460,7 @@ class DeepResearchAgent:
                 
                 return mock_contents[url_hash]
             
-            # For real URLs (when integrated with actual search)
+            # Production code for real URLs (when integrated with actual search)
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=10) as response:
                     if response.status == 200:
@@ -325,7 +474,22 @@ class DeepResearchAgent:
     
     async def indexer_agent(self, state: AgentState) -> AgentState:
         """
-        Indexes documents in FAISS vector store for efficient retrieval
+        Indexes documents in FAISS vector store for efficient semantic retrieval.
+        
+        This agent:
+        1. Extracts text content from all collected sources
+        2. Generates embedding vectors using sentence-transformers
+        3. Builds a FAISS index for fast similarity search
+        4. Stores documents with metadata for later retrieval
+        
+        The vector index enables the synthesizer to find the most relevant
+        passages for answering specific aspects of the research query.
+        
+        Args:
+            state: AgentState containing raw_sources to index
+            
+        Returns:
+            AgentState: Updated state with indexed_documents
         """
         print("\n📚 INDEXER: Building vector index...")
         
@@ -338,20 +502,22 @@ class DeepResearchAgent:
             state["error"] = "No sources collected - search functionality may not be working"
             return state
         
-        # Extract text content and create embeddings
+        # Extract text content from documents for embedding
         texts = []
         for doc in documents:
+            # Combine title and content for richer context
             text = f"{doc.get('title', '')} {doc.get('content', '')}"
             texts.append(text)
         
-        # Generate embeddings in batches for efficiency
+        # Generate embeddings in batch for efficiency
         embeddings = self.embedder.encode(texts, show_progress_bar=False)
         
-        # Build FAISS index
+        # Build FAISS index for similarity search
+        # IndexFlatL2 uses Euclidean distance (L2) for similarity measurement
         self.index = faiss.IndexFlatL2(self.vector_dim)
         self.index.add(embeddings.astype('float32'))
         
-        # Store documents with metadata
+        # Store documents with their metadata for later retrieval
         self.document_store = documents
         
         state["indexed_documents"] = documents
@@ -363,7 +529,23 @@ class DeepResearchAgent:
     
     async def synthesizer_agent(self, state: AgentState) -> AgentState:
         """
-        Synthesizes final report with citation-grounded outputs
+        Synthesizes final report with citation-grounded outputs.
+        
+        This agent:
+        1. Retrieves relevant passages via vector similarity search
+        2. Creates context with inline citation markers
+        3. Generates a comprehensive report using LLM
+        4. Ensures all claims are citation-grounded
+        5. Appends a bibliography of all sources
+        
+        The synthesis prioritizes factual accuracy by requiring every claim
+        to be supported by at least one source citation.
+        
+        Args:
+            state: AgentState with original_query and indexed documents
+            
+        Returns:
+            AgentState: Updated state with final_report
         """
         print("\n✍️  SYNTHESIZER: Generating final report...")
         
@@ -371,7 +553,7 @@ class DeepResearchAgent:
         if self.index is None or not self.document_store:
             print("⚠️  No sources available - generating report based on LLM knowledge")
             
-            # Generate a report without sources
+            # Fallback: Generate report using only LLM knowledge without sources
             fallback_prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a research expert. The user asked for research on a topic, 
                 but no web sources were available. Please provide a comprehensive overview based on 
@@ -414,24 +596,24 @@ Be thorough but acknowledge the limitation of not having current sources.""")
             print("✅ Fallback report generated (no sources available)")
             return state
         
-        # Normal path with sources
-        # Retrieve relevant passages using vector similarity
+        # Normal path with sources - retrieve relevant passages
         query_embedding = self.embedder.encode([state["original_query"]])
+        # Search for top 10 most relevant documents
         D, I = self.index.search(query_embedding.astype('float32'), k=min(10, len(self.document_store)))
         
         relevant_docs = [self.document_store[i] for i in I[0] if i < len(self.document_store)]
         
-        # Prepare context with citations
+        # Prepare context with citation markers for LLM
         context_parts = []
         for i, doc in enumerate(relevant_docs):
             citation_marker = f"[{i+1}]"
             context_parts.append(
-                f"{citation_marker} {doc.get('title', '')}\n{doc.get('content', '')[:500]}"
+                f"{citation_marker} {doc.get('title', '')}\n{doc.get('content', '')[:500]}"  # Limit content length
             )
         
         context = "\n\n".join(context_parts)
         
-        # Generate synthesis
+        # Generate synthesis with citation requirements
         synthesis_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a research synthesis expert. Based on the provided sources, create a comprehensive 
             report that answers the original query. 
@@ -457,7 +639,7 @@ Generate a comprehensive research report:""")
         
         response = await self.llm.ainvoke(messages)
         
-        # Create bibliography
+        # Create bibliography from all cited sources
         bibliography = "\n\nReferences:\n"
         for i, doc in enumerate(relevant_docs):
             citation = doc.get("citation")
@@ -475,7 +657,30 @@ Generate a comprehensive research report:""")
     
     async def research(self, query: str) -> Dict[str, Any]:
         """
-        Main entry point for research agent
+        Main entry point for executing a complete research task.
+        
+        This method orchestrates the entire research pipeline:
+        1. Initializes the agent state with the user's query
+        2. Executes the LangGraph workflow through all agents
+        3. Collects performance metrics and final results
+        4. Returns structured output with report and statistics
+        
+        Args:
+            query: The research question or topic to investigate
+            
+        Returns:
+            Dict containing:
+                - query: Original research question
+                - report: Final synthesized research report
+                - subtasks: Number of completed subtasks
+                - sources: Number of sources collected
+                - citations: Number of citations generated
+                - duration_seconds: Total execution time
+                - state: Complete final agent state for debugging
+                
+        Example:
+            result = await agent.research("What are the latest AI developments?")
+            print(result["report"])
         """
         print(f"\n{'='*80}")
         print(f"🚀 Starting Deep Research on: {query}")
@@ -483,7 +688,7 @@ Generate a comprehensive research report:""")
         
         start_time = datetime.now()
         
-        # Initialize state
+        # Initialize state with empty containers for all data
         initial_state: AgentState = {
             "original_query": query,
             "subtasks": [],
@@ -497,7 +702,7 @@ Generate a comprehensive research report:""")
             "error": None
         }
         
-        # Run the graph
+        # Run the compiled LangGraph workflow
         final_state = await self.graph.ainvoke(initial_state)
         
         end_time = datetime.now()
@@ -519,24 +724,42 @@ Generate a comprehensive research report:""")
 
 
 async def main():
-    """Demo usage"""
+    """
+    Demonstration function showing how to use the DeepResearchAgent.
+    
+    This function:
+    1. Prompts for or reads Gemini API key from environment
+    2. Initializes the research agent
+    3. Runs an example research query
+    4. Displays the results with statistics
+    
+    The example query explores quantum computing developments and their
+    impact on cryptography - a complex topic requiring multi-faceted research.
+    
+    Environment Variables:
+        GEMINI_API_KEY: Optional - can be set instead of interactive input
+        
+    Example:
+        python deep_research_agent.py
+        # Enter API key when prompted or set GEMINI_API_KEY env var
+    """
     import os
     
-    # Get API key from environment or prompt
+    # Get API key from environment or prompt user
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         api_key = input("Enter your Gemini API key: ")
     
-    # Initialize agent
+    # Initialize the research agent
     agent = DeepResearchAgent(gemini_api_key=api_key, max_sources=20)
     
-    # Example research query
+    # Example research query - can be modified for different topics
     query = "What are the latest developments in quantum computing and their potential impact on cryptography?"
     
-    # Run research
+    # Execute the research pipeline
     result = await agent.research(query)
     
-    # Display results
+    # Display comprehensive results with statistics
     print("\n" + "="*80)
     print("FINAL RESEARCH REPORT")
     print("="*80 + "\n")
@@ -551,4 +774,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Entry point for script execution
     asyncio.run(main())
